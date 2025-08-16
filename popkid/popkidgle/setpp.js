@@ -1,54 +1,75 @@
-import config from '../../config.cjs';
+import { downloadMediaMessage } from '@whiskeysockets/baileys';
+import Jimp from 'jimp';
+import config from '../config.cjs';
 
-const setpp = async (m, sock, botNumber, isBotAdmins, isAdmins, PopkidTheCreator, mess) => {
-  const prefix = config.PREFIX;
-  const cmd = m.body.startsWith(prefix) ? m.body.slice(prefix.length).split(' ')[0].toLowerCase() : '';
-  const text = m.body.slice(prefix.length + cmd.length).trim();
+const setProfilePicture = async (m, sock) => {
+    const botNumber = await sock.decodeJid(sock.user.id);
+    const prefix = config.PREFIX;
+    const cmd = m.body.startsWith(prefix)
+        ? m.body.slice(prefix.length).trim().split(/ +/).shift().toLowerCase()
+        : '';
 
-  if (cmd === 'setpp') {
-    const quoted = m.quoted;
-    const mime = quoted?.mimetype || '';
+    // Only trigger on "setpp"
+    if (cmd !== "setpp") return;
 
-    // Check if user replied to an image
-    if (!quoted || !/image/.test(mime)) {
-      return sock.sendMessage(m.from, {
-        text: `*Reply to an image with caption:* ${prefix}setpp [gc]`,
-      }, { quoted: m });
+    // Restrict to bot only
+    if (m.sender !== botNumber) {
+        return sock.sendMessage(m.from, { 
+            text: "❌ *Only the bot can run this command.*" 
+        }, { quoted: m });
     }
 
-    await m.React('🖼️');
+    // Check if replied message is image
+    if (!m.quoted?.message?.imageMessage) {
+        return sock.sendMessage(m.from, { 
+            text: "⚠️ *Reply to an image to set as profile picture.*" 
+        }, { quoted: m });
+    }
+
+    // Show loading reaction
+    await sock.sendMessage(m.from, { react: { text: '⏳', key: m.key } });
 
     try {
-      const mediaBuffer = await quoted.download(); // Get image buffer
+        // Download media
+        const media = await downloadMediaMessage(m.quoted, 'buffer');
+        if (!media) throw new Error("Image download failed");
 
-      if (!mediaBuffer || mediaBuffer.length === 0) {
+        // Process image
+        let image = await Jimp.read(media);
+
+        // Make it square
+        if (image.bitmap.width !== image.bitmap.height) {
+            const size = Math.max(image.bitmap.width, image.bitmap.height);
+            const squareImage = new Jimp(size, size, 0x000000FF);
+            squareImage.composite(image, (size - image.bitmap.width) / 2, (size - image.bitmap.height) / 2);
+            image = squareImage;
+        }
+
+        // Resize for WhatsApp
+        image.resize(640, 640);
+        const buffer = await image.getBufferAsync(Jimp.MIME_JPEG);
+
+        // Set profile picture
+        await sock.updateProfilePicture(botNumber, buffer);
+
+        // Success reaction & message
+        await sock.sendMessage(m.from, { react: { text: '✅', key: m.key } });
         return sock.sendMessage(m.from, {
-          text: '❌ Failed to download image.',
+            text: "✅ *Profile Picture Updated Successfully!*",
+            contextInfo: {
+                mentionedJid: [m.sender],
+                forwardingScore: 999,
+                isForwarded: true
+            }
         }, { quoted: m });
-      }
-
-      if (text === 'gc') {
-        // Group profile picture
-        if (!m.isGroup) return sock.sendMessage(m.from, { text: mess.group }, { quoted: m });
-        if (!isBotAdmins) return sock.sendMessage(m.from, { text: mess.botAdmin }, { quoted: m });
-        if (!isAdmins && !PopkidTheCreator) return sock.sendMessage(m.from, { text: mess.admin }, { quoted: m });
-
-        await sock.updateProfilePicture(m.from, mediaBuffer);
-        return sock.sendMessage(m.from, { text: '✅ Group profile picture updated successfully!' }, { quoted: m });
-
-      } else {
-        // Bot profile picture
-        if (!PopkidTheCreator) return sock.sendMessage(m.from, { text: mess.owner }, { quoted: m });
-
-        await sock.updateProfilePicture(botNumber, mediaBuffer);
-        return sock.sendMessage(m.from, { text: '✅ Bot profile picture updated successfully!' }, { quoted: m });
-      }
 
     } catch (err) {
-      console.error('❌ Error in setpp:', err);
-      return sock.sendMessage(m.from, { text: '❌ Failed to update profile picture!' }, { quoted: m });
+        console.error("Error setting profile picture:", err);
+        await sock.sendMessage(m.from, { react: { text: '❌', key: m.key } });
+        return sock.sendMessage(m.from, { 
+            text: "❌ *Error while updating profile picture.*" 
+        }, { quoted: m });
     }
-  }
 };
 
-export default setpp;
+export default setProfilePicture;
